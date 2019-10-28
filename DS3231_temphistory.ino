@@ -2,38 +2,76 @@
 #include <Wire.h>
 #include <time.h>
 #include <OneWire.h>
-#include "RTCGebras.h"
-//#include "RTClib.h" //INCLUSÃO DA BIBLIOTECA
+#include <time.h>
+#include <NTPClient.h>//Biblioteca do NTP - Editada com "getFullFormattedTime
+#include <WiFiUdp.h>//Biblioteca do UDP
+#include <EEPROM.h>
+#include "WifiGebras.h"
+#include "ScreenGebras.h"
 
-//RTC_DS3231 rtc; //OBJETO DO TIPO RTC_DS3231 
+WifiGebras* wifi = WifiGebras::getInstance();
+
+WiFiUDP udp;//Cria um objeto "UDP".
+NTPClient ntp(udp, "south-america.pool.ntp.org", -3 * 3600, 60000);//Cria um objeto "NTP" com as configurações.
 OneWire  ds(5);  // on pin D1 (a 4.7K resistor is necessary)
 
 os_timer_t tmr0;//Cria o Timer. Maximo de 7 Timers.
-RTCGebras* rtc = RTCGebras::getInstance();
-unsigned char timerFlag=0,timerCont=0;
+
+unsigned char timerFlag=0,timerCont=0,timerData=0,flag2=0;
 float celsius[24],avgTemp;
-String hour;
+unsigned int internalHour=0,internalMinute=00,internalSecond=0,idx=0;
+unsigned long internalEpoch=-1,temp=0,t1=0,t2=0;
 char daysOfTheWeek[7][12] = {"Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"};
-void timer(void*z){ //software timer de 1ms - Conta o relógio internalo
-  timerCont++;
-  if (timerCont>=10){
-    timerFlag=1;
-    timerCont=0;
-  }
-}
+String internalDay,internalDate,iSimpleDate,iSimpleTime;
+int whole,remain;
+
 void setup(void) {
   Serial.begin(115500);
+  EEPROM.begin(4096);
   //Serial.println("OK");
   os_timer_setfn(&tmr0, timer, NULL); //timer, subrotina, null
-  os_timer_arm(&tmr0, 100, true); //timer, tempo em ms (entre 1ms e 2s), loop=true
+  os_timer_arm(&tmr0, 1000, true); //timer, tempo em ms (entre 1ms e 2s), loop=true
 
-  for (char j=0;j>23;j++){
+  for (char j=0;j<=23;j++){
       celsius[j]=0;
   }
-  rtc->Setup();
-  rtc->SetTimestamp(1572034610);
-  //rtc.adjust(DateTime(2019, 10, 25, 17, 09, 30));
-  //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  t1=millis();
+  wifi->SetData("RoteiaPraMim", "12345678");
+  wifi->Connect();
+  while ( !wifi->IsConnected() && temp+60000>millis()) { // Tenta conectar por um minuto
+    delay ( 500 );
+    Serial.print ( "." );
+  }
+  Serial.println("Conectado!!");
+  ntp.begin();//Inicia o NTP.
+  ntp.forceUpdate();//Força o Update.
+  SetupClock(); //atualiza a hora ao ligar
+
+  for (int i = 0; i < 10; i++)
+  {
+    Serial.print(EEPROM.read(i));
+    Serial.print(" ");
+  }
+  Serial.println();
+
+  idx=((int(EEPROM.read(0))<<8)+int(EEPROM.read(1))); //0
+  if (idx<2)
+    idx+=2;
+  EEPROM.write(idx, 0xff); //1
+  EEPROM.write(idx+1, 0xff); //2
+  EEPROM.write(idx+2, internalHour); //3
+  EEPROM.write(idx+3, internalMinute); //4
+  idx+=4;
+  EEPROM.write(0,idx>>8);
+  EEPROM.write(1,idx);
+  EEPROM.commit();
+  for (char j=0;j<=10;j++){
+      Serial.print(EEPROM.read(j));
+      Serial.print(" ");
+  }
+  Serial.println();
+
+  pinMode(LED_BUILTIN,OUTPUT);
 }
  
 void loop(void) {
@@ -43,19 +81,58 @@ void loop(void) {
   byte data[12];
   byte addr[8];
   float fahrenheit;
-  if (timerFlag==1){
-    //DateTime now = rtc.now();
-    //Serial.print(now.hour(), DEC); //IMPRIME NO MONITOR SERIAL A HORA
-    //Serial.print(':'); //IMPRIME O CARACTERE NO MONITOR SERIAL
-    //Serial.println(now.minute(), DEC); //IMPRIME NO MONITOR SERIAL OS MINUTOS
-    rtc->Refresh();
-    hour=rtc->HourToString();
-    Serial.println(hour);
+
+  /*if (!wifi->IsConnected())
+    digitalWrite(LED_BUILTIN,LOW);
+  else
+    digitalWrite(LED_BUILTIN,HIGH);*/
+
+  if (internalMinute%4==0 && flag2==0){
+    flag2=1;
+    EEPROM.write(idx,whole);
+    EEPROM.write(idx+1,remain);
+    idx+=2;
+    EEPROM.write(0,idx>>8);
+    EEPROM.write(1,idx);
+    EEPROM.commit();
+    timerData=0;
+    Serial.print(internalHour);
+    Serial.print(":");
+    Serial.print(internalMinute);
+    Serial.print(" ; ");
+    Serial.print(whole);
+    Serial.print(".");
+    Serial.print(remain);
+    Serial.println(" ºC");
+    for(int i=0;i<100;i++){
+      Serial.print(EEPROM.read(i));
+      Serial.print(" ");
+      if(i%10==0 && i!=0)
+        Serial.println();
+    }
+     Serial.println();
+  }
+  
+  if ((internalMinute+1)%4==0 && flag2==1){
+    flag2=0;
+    
+  }
+
+  if ((internalSecond)%5!=0){
+    timerFlag=0;
+  }
+  if ((internalSecond%5)==0 && timerFlag==0){
+    timerFlag=1;
+    Serial.print(internalHour);
+    Serial.print(":");
+    Serial.print(internalMinute);
+    Serial.print(":");
+    Serial.print(internalSecond);
+    //Serial.print("\t;\t");
     if ( !ds.search(addr)) {
-      //Serial.println("No more addresses.");
-     // Serial.println();
       ds.reset_search();
       delay(250);
+      //Serial.print(" TESTE AAA "); //
       return;
     }
     //Serial.print("ROM =");
@@ -63,9 +140,9 @@ void loop(void) {
       //Serial.write(' ');
       //Serial.print(addr[i], HEX);
     }
-   
+    //Serial.print(" TESTE 1 ");
     if (OneWire::crc8(addr, 7) != addr[7]) {
-        //Serial.println("CRC is not valid!");
+        Serial.println("CRC is not valid!");
         return;
     }
     //Serial.println();
@@ -77,24 +154,22 @@ void loop(void) {
         type_s = 1;
         break;
       case 0x28:
-        //Serial.println("  Chip = DS18B20");
         type_s = 0;
         break;
       case 0x22:
-        //Serial.println("  Chip = DS1822");
         type_s = 0;
         break;
       default:
-        //Serial.println("Device is not a DS18x20 family device.");
+      
         type_s = 0;
         return;
     } 
-   
+    
     ds.reset();
     ds.select(addr);
     ds.write(0x44, 1);        // start conversion, with parasite power on at the end
-    
-    delay(1000);     // maybe 750ms is enough, maybe not
+
+    delay(750);
     // we might do a ds.depower() here, but the reset will take care of it.
     
     present = ds.reset();
@@ -150,10 +225,57 @@ void loop(void) {
     avgTemp/=24.;
     Serial.println(" ]");
     Serial.print("Média: ");
-    Serial.println(avgTemp);
+    Serial.print(avgTemp);
+    Serial.print(" ");
+    whole = avgTemp;
+    remain = (avgTemp - whole) * 100;
+    Serial.print(whole);
+    Serial.print(".");
+    Serial.println(remain);
     //Serial.println(" Celsius ");
     //Serial.print(fahrenheit);
     //Serial.println(" Fahrenheit");
-    timerFlag=0;
+    
+    timerData++;
+
+    Serial.print(timerData);
+    Serial.print(" ");
+  }
+}
+
+void timer(void*z){ //software timer de 1ms - Conta o relógio internalo
+  timerCont++;
+  if (timerCont>=10){
+    //timerFlag=1;
+    timerCont=0;
+  }
+  if(internalHour>23){
+    internalHour=0;
+  }
+  if(internalMinute>59){
+    internalHour++;
+    internalMinute=0;
+  }
+  if(internalSecond>59){
+    internalMinute++;
+    internalSecond=0;
+  }
+    internalSecond++;
+    internalEpoch++;
+}
+
+
+void SetupClock(){ //função que atualiza o relógio interno, se estiver conectado
+  if(wifi->IsConnected()){
+    ntp.update();
+    internalDay = daysOfTheWeek[ntp.getDay()];
+    internalHour = ntp.getHours();
+    internalMinute = ntp.getMinutes();
+    internalSecond=ntp.getSeconds();
+    internalEpoch = ntp.getEpochTime();
+    internalDate = ntp.getFullFormattedTime(internalEpoch);
+    iSimpleDate = ntp.getFormattedDate(internalEpoch);
+    iSimpleTime = ntp.getFormattedTime2(internalEpoch);
+    delay(10);
   }
 }
